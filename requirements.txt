@@ -9,3 +9,8 @@ seaborn
 plotly
 requests
 faker
+playwright
+beautifulsoup4
+httpx
+nest-asyncio
+faker

@@ -10,6 +10,9 @@ COPY requirements.txt /app/
 # Install dependencies
 RUN pip install --upgrade pip     && pip install -r requirements.txt
 
+# Install Playwright browsers
+RUN playwright install
+
 # Copy the rest of the application code
 COPY . /app
 

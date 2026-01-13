@@ -9,10 +9,261 @@ import seaborn as sns
 import hashlib
 from typing import List, Set, Dict, Tuple
 from enum import Enum
+import asyncio
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from bs4 import BeautifulSoup
+import httpx
+import time
 
 # Configure plot styles for better readability
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette('viridis')
+
+# ============================================================================
+# Web Scraping Functions
+# ============================================================================
+
+
+async def scrape_linkedin_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
+    """
+    Scrapes job postings from LinkedIn using Playwright.
+
+    Args:
+        search_query (str): The job search query (e.g., "Machine Learning Engineer")
+        max_results (int): Maximum number of job postings to scrape
+
+    Returns:
+        List[Dict]: List of job posting dictionaries
+    """
+    jobs = []
+    print("Scraping Linkedin")
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            # Navigate to LinkedIn jobs search
+            search_url = f"https://www.linkedin.com/jobs/search/?keywords={search_query.replace(' ', '%20')}"
+            await page.goto(search_url, timeout=30000)
+            await page.wait_for_timeout(3000)  # Wait for content to load
+
+            # Get page content
+            content = await page.content()
+            print(content)
+            soup = BeautifulSoup(content, 'html.parser')
+
+            # Parse job listings
+            job_cards = soup.find_all(
+                'div', class_='base-card', limit=max_results)
+
+            for card in job_cards:
+                try:
+                    title_elem = card.find(
+                        'h3', class_='base-search-card__title')
+                    company_elem = card.find(
+                        'h4', class_='base-search-card__subtitle')
+                    location_elem = card.find(
+                        'span', class_='job-search-card__location')
+                    link_elem = card.find('a', class_='base-card__full-link')
+
+                    if title_elem and company_elem:
+                        jobs.append({
+                            'title': title_elem.text.strip(),
+                            'company': company_elem.text.strip(),
+                            'location': location_elem.text.strip() if location_elem else 'Not specified',
+                            'description': f"Job posting for {title_elem.text.strip()} at {company_elem.text.strip()}",
+                            'source': 'LinkedIn',
+                            'url': link_elem.get('href', '') if link_elem else '',
+                            'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
+                        })
+                except Exception as e:
+                    print(f"Error parsing job card: {e}")
+                    continue
+
+            await browser.close()
+    except Exception as e:
+        print(f"Error scraping LinkedIn: {e}")
+
+    return jobs
+
+
+async def scrape_indeed_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
+    """
+    Scrapes job postings from Indeed using httpx and BeautifulSoup.
+
+    Args:
+        search_query (str): The job search query
+        max_results (int): Maximum number of job postings to scrape
+
+    Returns:
+        List[Dict]: List of job posting dictionaries
+    """
+    jobs = []
+    print("Scraping Indeed")
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            # Indeed search URL
+            search_url = f"https://www.indeed.com/jobs?q={search_query.replace(' ', '+')}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+
+            response = await client.get(search_url, headers=headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Parse job cards
+            job_cards = soup.find_all(
+                'div', class_='job_seen_beacon', limit=max_results)
+
+            for card in job_cards:
+                try:
+                    title_elem = card.find('h2', class_='jobTitle')
+                    company_elem = card.find('span', class_='companyName')
+                    location_elem = card.find('div', class_='companyLocation')
+
+                    if title_elem and company_elem:
+                        # Get job title text
+                        title_text = title_elem.get_text(strip=True)
+
+                        jobs.append({
+                            'title': title_text,
+                            'company': company_elem.text.strip(),
+                            'location': location_elem.text.strip() if location_elem else 'Not specified',
+                            'description': f"Job opportunity for {title_text} position",
+                            'source': 'Indeed',
+                            'url': f"https://www.indeed.com/viewjob?jk={card.get('data-jk', '')}",
+                            'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
+                        })
+                except Exception as e:
+                    print(f"Error parsing job card: {e}")
+                    continue
+
+    except Exception as e:
+        print(f"Error scraping Indeed: {e}")
+
+    return jobs
+
+
+async def scrape_glassdoor_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
+    """
+    Scrapes job postings from Glassdoor using httpx and BeautifulSoup.
+
+    Args:
+        search_query (str): The job search query
+        max_results (int): Maximum number of job postings to scrape
+
+    Returns:
+        List[Dict]: List of job posting dictionaries
+    """
+    jobs = []
+    print("Scraping Glassdoor")
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            # Glassdoor search URL
+            search_url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={search_query.replace(' ', '%20')}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+
+            response = await client.get(search_url, headers=headers)
+            print(response)
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Parse job listings
+            job_cards = soup.find_all(
+                'li', class_='react-job-listing', limit=max_results)
+
+            for card in job_cards:
+                try:
+                    title_elem = card.find('a', class_='job-title')
+                    company_elem = card.find('div', class_='employer-name')
+                    location_elem = card.find('div', class_='location')
+
+                    if title_elem:
+                        jobs.append({
+                            'title': title_elem.text.strip(),
+                            'company': company_elem.text.strip() if company_elem else 'Unknown Company',
+                            'location': location_elem.text.strip() if location_elem else 'Not specified',
+                            'description': f"Position available: {title_elem.text.strip()}",
+                            'source': 'Glassdoor',
+                            'url': f"https://www.glassdoor.com{title_elem.get('href', '')}",
+                            'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
+                        })
+                except Exception as e:
+                    print(f"Error parsing job card: {e}")
+                    continue
+
+    except Exception as e:
+        print(f"Error scraping Glassdoor: {e}")
+
+    return jobs
+
+
+def scrape_jobs_from_multiple_sources(
+    search_query: str,
+    sources: List[str] = ["linkedin", "indeed", "glassdoor"],
+    max_results_per_source: int = 50
+) -> List[Dict]:
+    """
+    Scrapes job postings from multiple sources.
+
+    Args:
+        search_query (str): The job search query
+        sources (List[str]): List of sources to scrape from
+        max_results_per_source (int): Maximum results per source
+
+    Returns:
+        List[Dict]: Combined list of job postings from all sources
+    """
+    all_jobs = []
+
+    async def scrape_all():
+        tasks = []
+
+        if "linkedin" in sources:
+            tasks.append(scrape_linkedin_jobs(
+                search_query, max_results_per_source))
+        if "indeed" in sources:
+            tasks.append(scrape_indeed_jobs(
+                search_query, max_results_per_source))
+        if "glassdoor" in sources:
+            tasks.append(scrape_glassdoor_jobs(
+                search_query, max_results_per_source))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, list):
+                all_jobs.extend(result)
+            elif isinstance(result, Exception):
+                print(f"Scraping error: {result}")
+
+        return all_jobs
+
+    # Run the async scraping
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If there's already a running loop, create a new one
+            import nest_asyncio
+            nest_asyncio.apply()
+            return asyncio.run(scrape_all())
+        else:
+            return asyncio.run(scrape_all())
+    except RuntimeError:
+        # Fallback for environments where asyncio.run() doesn't work
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(scrape_all())
+        finally:
+            loop.close()
+
+
+# ============================================================================
+# Original Synthetic Data Generation Function (kept as fallback)
+# ============================================================================
+
 def generate_synthetic_job_postings(num_postings: int = 1500) -> List[Dict]:
     """
     Generates a list of synthetic job postings, simulating scraped data.
@@ -43,6 +294,7 @@ def generate_synthetic_job_postings(num_postings: int = 1500) -> List[Dict]:
     ]
 
     ai_keywords = [
+        "python",
         "pytorch", "tensorflow", "keras", "mlops", "machine learning", "deep learning",
         "nlp", "computer vision", "transformers", "reinforcement learning",
         "scikit-learn", "data science", "predictive analytics", "llm", "fine-tuning",
@@ -54,37 +306,43 @@ def generate_synthetic_job_postings(num_postings: int = 1500) -> List[Dict]:
     ]
 
     non_ai_keywords = [
-        "java", "javascript", "react", "angular", "node.js", "python", "sql", "aws", "azure",
+        "java", "javascript", "react", "angular", "node.js", "sql", "aws", "azure",
         "microservices", "agile", "scrum", "cloud", "api", "database", "ui/ux", "frontend", "backend"
     ]
 
     for i in range(num_postings):
-        is_ai_role = random.random() < 0.7 # 70% chance of being an AI-related role
-        title = random.choice(ai_titles) if is_ai_role else random.choice(non_ai_titles)
+        is_ai_role = random.random() < 0.7  # 70% chance of being an AI-related role
+        title = random.choice(
+            ai_titles) if is_ai_role else random.choice(non_ai_titles)
         company = fake.company()
         location = fake.city()
 
-        description_parts = [fake.paragraph(nb_sentences=5) for _ in range(random.randint(2, 5))]
+        description_parts = [fake.paragraph(
+            nb_sentences=5) for _ in range(random.randint(2, 5))]
         description = " ".join(description_parts)
 
         # Inject AI/non-AI keywords based on role type
         if is_ai_role:
             num_ai_skills = random.randint(3, 10)
             skills_to_add = random.sample(ai_keywords, num_ai_skills)
-            description = description + " " + ", ".join(skills_to_add) + ". " + fake.text(max_nb_chars=200)
+            description = description + " " + \
+                ", ".join(skills_to_add) + ". " + fake.text(max_nb_chars=200)
         else:
             num_non_ai_skills = random.randint(3, 7)
             skills_to_add = random.sample(non_ai_keywords, num_non_ai_skills)
-            description = description + " " + ", ".join(skills_to_add) + ". " + fake.text(max_nb_chars=150)
+            description = description + " " + \
+                ", ".join(skills_to_add) + ". " + fake.text(max_nb_chars=150)
 
         # Add some randomness to ensure case-insensitivity tests work
         if random.random() < 0.3:
-            description = description.replace("python", "Python").replace("tensorflow", "TensorFlow")
+            description = description.replace(
+                "python", "Python").replace("tensorflow", "TensorFlow")
             title = title.replace("engineer", "Engineer")
 
         source = random.choice(["LinkedIn", "Indeed", "Company Careers Page"])
         url = fake.url()
-        posted_date = (datetime.now() - timedelta(days=random.randint(0, 90))).strftime('%Y-%m-%d') # Last 90 days
+        posted_date = (datetime.now() - timedelta(days=random.randint(0, 90))
+                       ).strftime('%Y-%m-%d')  # Last 90 days
 
         job_postings.append({
             "title": title,
@@ -98,17 +356,22 @@ def generate_synthetic_job_postings(num_postings: int = 1500) -> List[Dict]:
 
     return job_postings
 
+
 # Execute function to generate job postings
-raw_job_postings = generate_synthetic_job_postings(num_postings=2000) # Generate more than 1500 to allow for deduplication
-print(f"Generated {len(raw_job_postings)} raw job postings.")
-print("\nSample Job Posting:")
-print(raw_job_postings[0])
+# Generate more than 1500 to allow for deduplication
+# raw_job_postings = generate_synthetic_job_postings(num_postings=2000)
+# print(f"Generated {len(raw_job_postings)} raw job postings.")
+# print("\nSample Job Posting:")
+# print(raw_job_postings[0])
+
+
 class SkillCategory(str, Enum):
     ML_ENGINEERING = "ml_engineering"
     DATA_SCIENCE = "data_science"
     AI_INFRASTRUCTURE = "ai_infrastructure"
     AI_PRODUCT = "ai_product"
     AI_STRATEGY = "ai_strategy"
+
 
 AI_SKILLS: Dict[SkillCategory, Set[str]] = {
     SkillCategory.ML_ENGINEERING: {
@@ -120,7 +383,7 @@ AI_SKILLS: Dict[SkillCategory, Set[str]] = {
     SkillCategory.DATA_SCIENCE: {
         "machine learning", "data science", "statistical modeling",
         "predictive analytics", "a/b testing", "experimentation",
-        "python", "r", "sql", "pandas", "numpy", "scikit-learn",
+        "python", "sql", "pandas", "numpy", "scikit-learn",
         "data analytics", "data mining"
     },
     SkillCategory.AI_INFRASTRUCTURE: {
@@ -142,8 +405,11 @@ AI_SKILLS: Dict[SkillCategory, Set[str]] = {
 }
 
 # Example usage (demonstrating the structure)
-print(f"Number of AI skill categories: {len(AI_SKILLS)}")
-print(f"Skills in ML Engineering: {list(AI_SKILLS[SkillCategory.ML_ENGINEERING])[:5]}...")
+# print(f"Number of AI skill categories: {len(AI_SKILLS)}")
+# print(
+#     f"Skills in ML Engineering: {list(AI_SKILLS[SkillCategory.ML_ENGINEERING])[:5]}...")
+
+
 class SeniorityLevel(str, Enum):
     ENTRY = "entry"
     MID = "mid"
@@ -152,6 +418,7 @@ class SeniorityLevel(str, Enum):
     DIRECTOR = "director"
     VP = "vp"
     EXECUTIVE = "executive"
+
 
 SENIORITY_INDICATORS: Dict[SeniorityLevel, List[str]] = {
     SeniorityLevel.ENTRY: ["junior", "entry", "associate", "intern", "graduate", "new grad"],
@@ -162,6 +429,7 @@ SENIORITY_INDICATORS: Dict[SeniorityLevel, List[str]] = {
     SeniorityLevel.VP: ["vp", "vice president"],
     SeniorityLevel.EXECUTIVE: ["chief", "cto", "cdo", "cao", "evp", "svp"]
 }
+
 
 def classify_seniority(title: str) -> SeniorityLevel:
     """
@@ -179,14 +447,21 @@ def classify_seniority(title: str) -> SeniorityLevel:
     for level in reversed(list(SeniorityLevel)):
         if any(ind in title_lower for ind in SENIORITY_INDICATORS[level]):
             return level
-    return SeniorityLevel.MID # Default to Mid-Level if no specific indicators found
+    return SeniorityLevel.MID  # Default to Mid-Level if no specific indicators found
+
 
 # Example usage
-print(f"Classification for 'Junior ML Engineer': {classify_seniority('Junior ML Engineer')}")
-print(f"Classification for 'Principal Data Scientist': {classify_seniority('Principal Data Scientist')}")
-print(f"Classification for 'Data Scientist II': {classify_seniority('Data Scientist II')}")
-print(f"Classification for 'VP of AI Strategy': {classify_seniority('VP of AI Strategy')}")
-print(f"Classification for 'AI Engineer': {classify_seniority('AI Engineer')}")
+# print(
+#     f"Classification for 'Junior ML Engineer': {classify_seniority('Junior ML Engineer')}")
+# print(
+#     f"Classification for 'Principal Data Scientist': {classify_seniority('Principal Data Scientist')}")
+# print(
+#     f"Classification for 'Data Scientist II': {classify_seniority('Data Scientist II')}")
+# print(
+#     f"Classification for 'VP of AI Strategy': {classify_seniority('VP of AI Strategy')}")
+# print(f"Classification for 'AI Engineer': {classify_seniority('AI Engineer')}")
+
+
 def extract_ai_skills(text: str) -> Set[str]:
     """
     Extracts AI skills from a job description text, performing case-insensitive matching.
@@ -205,14 +480,17 @@ def extract_ai_skills(text: str) -> Set[str]:
                 found_skills.add(skill)
     return found_skills
 
-# Example usage
-sample_description = "We are looking for a deep learning engineer with experience in PyTorch, Transformers, and MLOps. Strong Python skills and familiar with AWS infrastructure."
-extracted = extract_ai_skills(sample_description)
-print(f"\nSkills extracted from sample description: {extracted}")
 
-sample_description_case_issue = "Candidate must have Pytorch experience and be proficient in TENSORFLOW."
-extracted_case_issue = extract_ai_skills(sample_description_case_issue)
-print(f"Skills extracted with case-insensitivity: {extracted_case_issue}")
+# Example usage
+# sample_description = "We are looking for a deep learning engineer with experience in PyTorch, Transformers, and MLOps. Strong Python skills and familiar with AWS infrastructure."
+# extracted = extract_ai_skills(sample_description)
+# print(f"\nSkills extracted from sample description: {extracted}")
+
+# sample_description_case_issue = "Candidate must have Pytorch experience and be proficient in TENSORFLOW."
+# extracted_case_issue = extract_ai_skills(sample_description_case_issue)
+# print(f"Skills extracted with case-insensitivity: {extracted_case_issue}")
+
+
 def calculate_ai_relevance_score(skills: Set[str], title: str) -> float:
     """
     Calculates a 0-1 AI relevance score for a job posting.
@@ -232,30 +510,40 @@ def calculate_ai_relevance_score(skills: Set[str], title: str) -> float:
 
     # Boost score if AI-specific keywords are present in the title
     title_lower = title.lower()
-    title_keywords = ["ai", "ml", "machine learning", "data scientist", "mlops", "artificial intelligence"]
-    title_boost = 0.4 if any(kw in title_lower for kw in title_keywords) else 0.0
+    title_keywords = ["ai", "ml", "machine learning",
+                      "data scientist", "mlops", "artificial intelligence"]
+    title_boost = 0.4 if any(
+        kw in title_lower for kw in title_keywords) else 0.0
 
     # Combine scores, ensuring it doesn't exceed 1.0
     return min(base_score + title_boost, 1.0)
 
+
 # Example usage
-example_title_1 = "Senior Machine Learning Engineer"
-example_skills_1 = {"pytorch", "mlops", "deep learning", "transformers", "aws"} # 5 skills
-score_1 = calculate_ai_relevance_score(example_skills_1, example_title_1)
-print(f"Title: '{example_title_1}', Skills: {example_skills_1}")
-print(f"AI Relevance Score: {score_1:.2f} (Base: {min(len(example_skills_1)/5, 1.0)*0.6:.2f}, Title Boost: {0.4 if any(kw in example_title_1.lower() for kw in ['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']) else 0.0:.1f})\n")
+# example_title_1 = "Senior Machine Learning Engineer"
+# example_skills_1 = {"pytorch", "mlops",
+#                     "deep learning", "transformers", "aws"}  # 5 skills
+# score_1 = calculate_ai_relevance_score(example_skills_1, example_title_1)
+# print(f"Title: '{example_title_1}', Skills: {example_skills_1}")
+# print(
+#     f"AI Relevance Score: {score_1:.2f} (Base: {min(len(example_skills_1)/5, 1.0)*0.6:.2f}, Title Boost: {0.4 if any(kw in example_title_1.lower() for kw in ['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']) else 0.0:.1f})\n")
 
-example_title_2 = "Software Engineer"
-example_skills_2 = {"python", "cloud"} # Not AI skills as per taxonomy
-score_2 = calculate_ai_relevance_score(example_skills_2, example_title_2)
-print(f"Title: '{example_title_2}', Skills: {example_skills_2}")
-print(f"AI Relevance Score: {score_2:.2f} (Base: {min(len(example_skills_2)/5, 1.0)*0.6:.2f}, Title Boost: {0.4 if any(kw in example_title_2.lower() for kw in ['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']) else 0.0:.1f})\n")
+# example_title_2 = "Software Engineer"
+# example_skills_2 = {"python", "cloud"}  # Not AI skills as per taxonomy
+# score_2 = calculate_ai_relevance_score(example_skills_2, example_title_2)
+# print(f"Title: '{example_title_2}', Skills: {example_skills_2}")
+# print(
+#     f"AI Relevance Score: {score_2:.2f} (Base: {min(len(example_skills_2)/5, 1.0)*0.6:.2f}, Title Boost: {0.4 if any(kw in example_title_2.lower() for kw in ['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']) else 0.0:.1f})\n")
 
-example_title_3 = "Data Scientist"
-example_skills_3 = {"scikit-learn", "statistical modeling", "python"} # 3 AI skills
-score_3 = calculate_ai_relevance_score(example_skills_3, example_title_3)
-print(f"Title: '{example_title_3}', Skills: {example_skills_3}")
-print(f"AI Relevance Score: {score_3:.2f} (Base: {min(len(example_skills_3)/5, 1.0)*0.6:.2f}, Title Boost: {0.4 if any(kw in example_title_3.lower() for kw in ['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']) else 0.0:.1f})\n")
+# example_title_3 = "Data Scientist"
+# example_skills_3 = {"scikit-learn",
+#                     "statistical modeling", "python"}  # 3 AI skills
+# score_3 = calculate_ai_relevance_score(example_skills_3, example_title_3)
+# print(f"Title: '{example_title_3}', Skills: {example_skills_3}")
+# print(
+#     f"AI Relevance Score: {score_3:.2f} (Base: {min(len(example_skills_3)/5, 1.0)*0.6:.2f}, Title Boost: {0.4 if any(kw in example_title_3.lower() for kw in ['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']) else 0.0:.1f})\n")
+
+
 def process_job_postings(raw_jobs: List[Dict]) -> List[Dict]:
     """
     Processes raw job postings to extract skills, classify seniority,
@@ -279,20 +567,25 @@ def process_job_postings(raw_jobs: List[Dict]) -> List[Dict]:
         seniority_level = classify_seniority(title)
 
         # Calculate AI relevance score
-        ai_relevance_score = calculate_ai_relevance_score(extracted_skills, title)
+        ai_relevance_score = calculate_ai_relevance_score(
+            extracted_skills, title)
 
         processed_job = job.copy()
-        processed_job['extracted_skills'] = list(extracted_skills) # Convert set to list for easier storage
+        # Convert set to list for easier storage
+        processed_job['extracted_skills'] = list(extracted_skills)
         processed_job['seniority_level'] = seniority_level.value
         processed_job['ai_relevance_score'] = ai_relevance_score
         processed_jobs.append(processed_job)
     return processed_jobs
 
+
 # Execute processing
-processed_job_postings = process_job_postings(raw_job_postings)
-print(f"Processed {len(processed_job_postings)} job postings.")
-print("\nSample Processed Job Posting:")
-print(processed_job_postings[0])
+# processed_job_postings = process_job_postings(raw_job_postings)
+# print(f"Processed {len(processed_job_postings)} job postings.")
+# print("\nSample Processed Job Posting:")
+# print(processed_job_postings[0])
+
+
 def deduplicate_job_postings(jobs: List[Dict]) -> List[Dict]:
     """
     Deduplicates a list of job postings based on a hash of title, company, and location.
@@ -317,17 +610,21 @@ def deduplicate_job_postings(jobs: List[Dict]) -> List[Dict]:
             seen_hashes.add(job_hash)
     return unique_jobs
 
-# Execute deduplication
-deduplicated_job_postings = deduplicate_job_postings(processed_job_postings)
-print(f"Initial processed postings: {len(processed_job_postings)}")
-print(f"Deduplicated postings: {len(deduplicated_job_postings)}")
-print(f"Removed {len(processed_job_postings) - len(deduplicated_job_postings)} duplicates.")
 
-# Convert to Pandas DataFrame for easier manipulation
-df_jobs = pd.DataFrame(deduplicated_job_postings)
-df_jobs['posted_date'] = pd.to_datetime(df_jobs['posted_date'])
-print("\nFirst 5 rows of the final DataFrame:")
-print(df_jobs.head())
+# Execute deduplication
+# deduplicated_job_postings = deduplicate_job_postings(processed_job_postings)
+# print(f"Initial processed postings: {len(processed_job_postings)}")
+# print(f"Deduplicated postings: {len(deduplicated_job_postings)}")
+# print(
+#     f"Removed {len(processed_job_postings) - len(deduplicated_job_postings)} duplicates.")
+
+# # Convert to Pandas DataFrame for easier manipulation
+# df_jobs = pd.DataFrame(deduplicated_job_postings)
+# df_jobs['posted_date'] = pd.to_datetime(df_jobs['posted_date'])
+# print("\nFirst 5 rows of the final DataFrame:")
+# print(df_jobs.head())
+
+
 def aggregate_weekly_job_volume(df: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregates the number of job postings on a weekly basis.
@@ -339,14 +636,19 @@ def aggregate_weekly_job_volume(df: pd.DataFrame) -> pd.DataFrame:
         pd.DataFrame: DataFrame with 'week_start' and 'job_count' columns.
     """
     df_copy = df.copy()
-    df_copy['week_start'] = df_copy['posted_date'].dt.to_period('W').dt.start_time
-    weekly_job_volume = df_copy.groupby('week_start').size().reset_index(name='job_count')
+    df_copy['week_start'] = df_copy['posted_date'].dt.to_period(
+        'W').dt.start_time
+    weekly_job_volume = df_copy.groupby(
+        'week_start').size().reset_index(name='job_count')
     return weekly_job_volume.sort_values('week_start')
 
+
 # Execute weekly job volume aggregation
-weekly_job_volume_df = aggregate_weekly_job_volume(df_jobs)
-print("Weekly Job Volume (first 5 weeks):")
-print(weekly_job_volume_df.head())
+# weekly_job_volume_df = aggregate_weekly_job_volume(df_jobs)
+# print("Weekly Job Volume (first 5 weeks):")
+# print(weekly_job_volume_df.head())
+
+
 def aggregate_weekly_skills_and_seniority(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Aggregates top skills and seniority level distribution on a weekly basis.
@@ -360,28 +662,47 @@ def aggregate_weekly_skills_and_seniority(df: pd.DataFrame) -> Tuple[pd.DataFram
             - DataFrame with weekly seniority distribution ('week_start', 'seniority_level', 'count').
     """
     df_copy = df.copy()
-    df_copy['week_start'] = df_copy['posted_date'].dt.to_period('W').dt.start_time
+    df_copy['week_start'] = df_copy['posted_date'].dt.to_period(
+        'W').dt.start_time
 
     # Aggregate skills
     weekly_skills_data = []
     for week_start, group in df_copy.groupby('week_start'):
-        all_skills_this_week = [skill for sublist in group['extracted_skills'] for skill in sublist]
+        all_skills_this_week = [
+            skill for sublist in group['extracted_skills'] for skill in sublist]
         skill_counts = Counter(all_skills_this_week)
-        for skill, count in skill_counts.most_common(10): # Top 10 skills per week
-            weekly_skills_data.append({'week_start': week_start, 'skill': skill, 'count': count})
-    weekly_top_skills_df = pd.DataFrame(weekly_skills_data)
+        # Top 10 skills per week
+        for skill, count in skill_counts.most_common(10):
+            weekly_skills_data.append(
+                {'week_start': week_start, 'skill': skill, 'count': count})
+
+    # Create DataFrame with proper columns even if empty
+    if weekly_skills_data:
+        weekly_top_skills_df = pd.DataFrame(weekly_skills_data)
+        weekly_top_skills_df = weekly_top_skills_df.sort_values(
+            ['week_start', 'count'], ascending=[True, False])
+    else:
+        weekly_top_skills_df = pd.DataFrame(
+            columns=['week_start', 'skill', 'count'])
 
     # Aggregate seniority
-    weekly_seniority_df = df_copy.groupby(['week_start', 'seniority_level']).size().reset_index(name='count')
-    return weekly_top_skills_df.sort_values(['week_start', 'count'], ascending=[True, False]), weekly_seniority_df.sort_values('week_start')
+    weekly_seniority_df = df_copy.groupby(
+        ['week_start', 'seniority_level']).size().reset_index(name='count')
+    weekly_seniority_df = weekly_seniority_df.sort_values('week_start')
+
+    return weekly_top_skills_df, weekly_seniority_df
+
 
 # Execute weekly skills and seniority aggregation
-weekly_top_skills_df, weekly_seniority_df = aggregate_weekly_skills_and_seniority(df_jobs)
+# weekly_top_skills_df, weekly_seniority_df = aggregate_weekly_skills_and_seniority(
+#     df_jobs)
 
-print("\nWeekly Top Skills (first 5 entries):")
-print(weekly_top_skills_df.head())
-print("\nWeekly Seniority Distribution (first 5 entries):")
-print(weekly_seniority_df.head())
+# print("\nWeekly Top Skills (first 5 entries):")
+# print(weekly_top_skills_df.head())
+# print("\nWeekly Seniority Distribution (first 5 entries):")
+# print(weekly_seniority_df.head())
+
+
 def plot_weekly_job_volume(df_weekly_volume: pd.DataFrame):
     """
     Generates a line plot showing weekly trends in AI job posting volume.
@@ -390,7 +711,8 @@ def plot_weekly_job_volume(df_weekly_volume: pd.DataFrame):
         df_weekly_volume (pd.DataFrame): DataFrame with 'week_start' and 'job_count'.
     """
     plt.figure(figsize=(14, 7))
-    sns.lineplot(data=df_weekly_volume, x='week_start', y='job_count', marker='o')
+    sns.lineplot(data=df_weekly_volume, x='week_start',
+                 y='job_count', marker='o')
     plt.title('Weekly Trend in AI Job Postings Volume', fontsize=16)
     plt.xlabel('Week Start Date', fontsize=12)
     plt.ylabel('Number of Job Postings', fontsize=12)
@@ -399,8 +721,11 @@ def plot_weekly_job_volume(df_weekly_volume: pd.DataFrame):
     plt.tight_layout()
     plt.show()
 
+
 # Execute visualization
-plot_weekly_job_volume(weekly_job_volume_df)
+# plot_weekly_job_volume(weekly_job_volume_df)
+
+
 def plot_top_skills(df_jobs: pd.DataFrame):
     """
     Generates a bar chart showing the top 10 most requested AI skills.
@@ -408,9 +733,11 @@ def plot_top_skills(df_jobs: pd.DataFrame):
     Args:
         df_jobs (pd.DataFrame): DataFrame containing job postings with 'extracted_skills'.
     """
-    all_skills = [skill for sublist in df_jobs['extracted_skills'] for skill in sublist]
+    all_skills = [skill for sublist in df_jobs['extracted_skills']
+                  for skill in sublist]
     skill_counts = Counter(all_skills)
-    top_10_skills = pd.DataFrame(skill_counts.most_common(10), columns=['skill', 'count'])
+    top_10_skills = pd.DataFrame(
+        skill_counts.most_common(10), columns=['skill', 'count'])
 
     plt.figure(figsize=(14, 7))
     sns.barplot(x='count', y='skill', data=top_10_skills, palette='viridis')
@@ -420,8 +747,11 @@ def plot_top_skills(df_jobs: pd.DataFrame):
     plt.tight_layout()
     plt.show()
 
+
 # Execute visualization
-plot_top_skills(df_jobs)
+# plot_top_skills(df_jobs)
+
+
 def plot_seniority_distribution(df_jobs: pd.DataFrame):
     """
     Generates a bar chart showing the distribution of AI job demand across seniority levels.
@@ -430,10 +760,12 @@ def plot_seniority_distribution(df_jobs: pd.DataFrame):
         df_jobs (pd.DataFrame): DataFrame containing job postings with 'seniority_level'.
     """
     seniority_order = [level.value for level in SeniorityLevel]
-    seniority_counts = df_jobs['seniority_level'].value_counts().reindex(seniority_order, fill_value=0)
+    seniority_counts = df_jobs['seniority_level'].value_counts().reindex(
+        seniority_order, fill_value=0)
 
     plt.figure(figsize=(12, 6))
-    sns.barplot(x=seniority_counts.index, y=seniority_counts.values, palette='coolwarm')
+    sns.barplot(x=seniority_counts.index,
+                y=seniority_counts.values, palette='coolwarm')
     plt.title('Distribution of AI Job Demand by Seniority Level', fontsize=16)
     plt.xlabel('Seniority Level', fontsize=12)
     plt.ylabel('Number of Job Postings', fontsize=12)
@@ -441,5 +773,6 @@ def plot_seniority_distribution(df_jobs: pd.DataFrame):
     plt.tight_layout()
     plt.show()
 
+
 # Execute visualization
-plot_seniority_distribution(df_jobs)
+# plot_seniority_distribution(df_jobs)
