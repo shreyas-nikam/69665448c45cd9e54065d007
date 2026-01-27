@@ -9,13 +9,14 @@ import streamlit_mermaid as stmd
 
 def get_highlighted_pipeline_diagram(step_number):
     """
-    Generates a Mermaid diagram string for the data pipeline with a specific step highlighted.
-
-    :param step_number: Integer (1-6) indicating which step to highlight.
-    :return: String containing the Mermaid syntax.
+    Generates a Mermaid diagram string with 'useMaxWidth' disabled 
+    so it fills the container.
     """
 
-    # Define the pipeline steps (Node ID, Label)
+    # 1. Define the Mermaid configuration directive
+    # This JSON block tells Mermaid to NOT constrain the width (allows full-width)
+    config = "%%{init: {'flowchart': {'useMaxWidth': false}}}%%"
+
     steps = [
         ("A", "Scrape"),
         ("B", "Extract Skills"),
@@ -25,23 +26,17 @@ def get_highlighted_pipeline_diagram(step_number):
         ("F", "Visualize")
     ]
 
-    # Initialize the chart
-    mermaid_lines = ["flowchart LR"]
+    # 2. Start with config + flowchart definition
+    mermaid_lines = [config, "flowchart LR"]
 
-    # 1. Construct the nodes and connections
-    # This creates: A[Scrape] --> B[Extract Skills] --> ...
+    # 3. Construct nodes
     node_definitions = [f'{node_id}["{label}"]' for node_id, label in steps]
     connection_string = " --> ".join(node_definitions)
     mermaid_lines.append(f"    {connection_string}")
 
-    # 2. Add highlighting logic
-    # Check if step_number is valid (1-based index)
+    # 4. Highlight logic
     if 1 <= step_number <= len(steps):
-        # Get the Node ID for the requested step (e.g., step 1 -> index 0 -> "A")
         target_node_id = steps[step_number - 1][0]
-
-        # Add styling for that specific node
-        # Using a bright orange fill for visibility
         style_def = (
             f"    style {target_node_id} "
             "fill:#ff9900,stroke:#333,stroke-width:2px,color:white"
@@ -76,7 +71,8 @@ st.sidebar.divider()
 st.sidebar.title("Navigation")
 
 page_options = [
-    "Introduction & Data Generation",
+    "Introduction",
+    "Data Generation & Scraping",
     "Defining AI Taxonomy & Scoring Logic",
     "Data Processing & Deduplication",
     "Temporal Aggregation & Visualizations"
@@ -121,7 +117,7 @@ st.title("QuLab: Job Signals & Talent Data")
 st.divider()
 
 # --- Page: Introduction & Data Generation ---
-if st.session_state.current_page == 'Introduction & Data Generation':
+if st.session_state.current_page == 'Introduction':
     st.header("1. Environment Setup and Data Generation")
     st.markdown(f"Welcome to your next lab for building the \"PE-Org AIR System\"! Your mission is to empower the HR and strategy teams with crucial insights into the evolving demand for AI talent in the broader market. The goal is to build an internal tool that provides actionable intelligence, enabling proactive adaptation of hiring strategies, focus on in-demand skills, and a clear understanding of the competitive landscape for AI professionals. This tool is vital for the company to stay agile and competitive in a fast-changing talent market.")
     st.markdown(f"Today, you'll be developing the core components of this system. This involves collecting real-world job data through web scraping, implementing sophisticated logic for extracting AI-related skills and classifying job seniority, calculating a critical AI relevance score, and finally, aggregating this data for time-series analysis and visualization. Every step you take is designed to directly address a business need, transforming raw data into strategic insights for your organization.")
@@ -137,7 +133,10 @@ if st.session_state.current_page == 'Introduction & Data Generation':
 """)
 
     stmd.st_mermaid(get_highlighted_pipeline_diagram(0), width='stretch')
+    st.info("**Note:** The classification, extraction and processing steps in this lab are just for demo. In real-world scenarios, these would require more robust implementations and validations.")
 
+
+elif st.session_state.current_page == 'Data Generation & Scraping':
     st.subheader("1.1 Job Posting Data Collection")
     st.markdown(f"The HR team needs a robust dataset to analyze. Using web scraping techniques with Playwright for browser automation, we can collect job postings from LinkedIn. Each job posting includes a title, description, company name, location, source, URL, and posted date.")
     stmd.st_mermaid(get_highlighted_pipeline_diagram(1), width='stretch')
