@@ -4,6 +4,52 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from source import *
 from io import BytesIO
+import streamlit_mermaid as stmd
+
+
+def get_highlighted_pipeline_diagram(step_number):
+    """
+    Generates a Mermaid diagram string for the data pipeline with a specific step highlighted.
+
+    :param step_number: Integer (1-6) indicating which step to highlight.
+    :return: String containing the Mermaid syntax.
+    """
+
+    # Define the pipeline steps (Node ID, Label)
+    steps = [
+        ("A", "Scrape"),
+        ("B", "Extract Skills"),
+        ("C", "Classify Roles"),
+        ("D", "Calculate Score"),
+        ("E", "Aggregate"),
+        ("F", "Visualize")
+    ]
+
+    # Initialize the chart
+    mermaid_lines = ["flowchart LR"]
+
+    # 1. Construct the nodes and connections
+    # This creates: A[Scrape] --> B[Extract Skills] --> ...
+    node_definitions = [f'{node_id}["{label}"]' for node_id, label in steps]
+    connection_string = " --> ".join(node_definitions)
+    mermaid_lines.append(f"    {connection_string}")
+
+    # 2. Add highlighting logic
+    # Check if step_number is valid (1-based index)
+    if 1 <= step_number <= len(steps):
+        # Get the Node ID for the requested step (e.g., step 1 -> index 0 -> "A")
+        target_node_id = steps[step_number - 1][0]
+
+        # Add styling for that specific node
+        # Using a bright orange fill for visibility
+        style_def = (
+            f"    style {target_node_id} "
+            "fill:#ff9900,stroke:#333,stroke-width:2px,color:white"
+        )
+        mermaid_lines.append(style_def)
+
+    return "\n".join(mermaid_lines)
+
 
 # --- Application Layout and Navigation ---
 st.set_page_config(
@@ -90,66 +136,156 @@ if st.session_state.current_page == 'Introduction & Data Generation':
 * Visualizes key insights, such as weekly job volume, top skills, and seniority distribution.
 """)
 
+    stmd.st_mermaid(get_highlighted_pipeline_diagram(0), width='stretch')
+
     st.subheader("1.1 Job Posting Data Collection")
     st.markdown(f"The HR team needs a robust dataset to analyze. Using web scraping techniques with Playwright for browser automation, we can collect job postings from LinkedIn. Each job posting includes a title, description, company name, location, source, URL, and posted date.")
+    stmd.st_mermaid(get_highlighted_pipeline_diagram(1), width='stretch')
 
     with st.expander("Web Scraper Implementation"):
         st.markdown(
             "Below is the implementation of the LinkedIn job scraper using Playwright:")
-        st.code('''async def scrape_linkedin_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
-        """
-        Scrapes job postings from LinkedIn using Playwright.
-        
-        Args:
-            search_query (str): The job search query (e.g., "Machine Learning Engineer")
-            max_results (int): Maximum number of job postings to scrape
-            
-        Returns:
-            List[Dict]: List of job posting dictionaries
-        """
-        jobs = []
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                
-                # Navigate to LinkedIn jobs search
-                search_url = f"https://www.linkedin.com/jobs/search/?keywords={search_query.replace(' ', '%20')}"
-                await page.goto(search_url, timeout=30000)
-                await page.wait_for_timeout(3000)  # Wait for content to load
-                
-                # Get page content
-                content = await page.content()
-                soup = BeautifulSoup(content, 'html.parser')
-                
-                # Parse job listings
-                job_cards = soup.find_all('div', class_='base-card', limit=max_results)
-                
-                for card in job_cards:
-                    try:
-                        title_elem = card.find('h3', class_='base-search-card__title')
-                        company_elem = card.find('h4', class_='base-search-card__subtitle')
-                        location_elem = card.find('span', class_='job-search-card__location')
-                        link_elem = card.find('a', class_='base-card__full-link')
-                        
-                        if title_elem and company_elem:
-                            jobs.append({
-                                'title': title_elem.text.strip(),
-                                'company': company_elem.text.strip(),
-                                'location': location_elem.text.strip() if location_elem else 'Not specified',
-                                'description': f"Job posting for {title_elem.text.strip()} at {company_elem.text.strip()}",
-                                'source': 'LinkedIn',
-                                'url': link_elem.get('href', '') if link_elem else '',
-                                'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
-                            })
-                    except Exception as e:
-                        continue
-                
-                await browser.close()
-        except Exception as e:
-            print(f"Error scraping LinkedIn: {e}")
-        
-        return jobs''', language='python')
+        st.code('''
+# JobSpy expects site_name values like: linkedin, indeed, glassdoor, google, zip_recruiter :contentReference[oaicite:1]{index=1}
+_SOURCE_TO_JOBSPY_SITE = {
+    "linkedin": "linkedin",
+    "indeed": "indeed",
+    "glassdoor": "glassdoor",
+    "google": "google",
+    "ziprecruiter": "zip_recruiter",
+    "zip_recruiter": "zip_recruiter",
+    "bayt": "bayt",
+    "naukri": "naukri",
+    "bdjobs": "bdjobs",
+}
+
+
+def _safe_str(x) -> str:
+    return "" if x is None else str(x)
+
+
+def _normalize_posted_date(val) -> str:
+    """
+    JobSpy commonly returns a `date_posted` column (string or datetime-like). :contentReference[oaicite:2]{index=2}
+    Normalize to 'YYYY-MM-DD'. If missing/unparseable, default to today.
+    """
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return datetime.now().strftime("%Y-%m-%d")
+    try:
+        dt = pd.to_datetime(val, errors="coerce")
+        if pd.isna(dt):
+            return datetime.now().strftime("%Y-%m-%d")
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+def _jobspy_df_to_jobs(df: pd.DataFrame) -> List[Dict]:
+    """
+    Converts JobSpy dataframe to the schema used throughout this file:
+      title, company, location, description, source, url, posted_date
+
+    JobSpy output is commonly lowercase (e.g., site/title/company/location/job_url/description/date_posted). :contentReference[oaicite:3]{index=3}
+    Some examples/docs show uppercase columns (SITE/TITLE/COMPANY/CITY/STATE/JOB_URL/DESCRIPTION). :contentReference[oaicite:4]{index=4}
+    This adapter supports both.
+    """
+    if df is None or df.empty:
+        return []
+
+    # Build a case-insensitive column map
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*names: str):
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+
+    c_site = col("site", "SITE")
+    c_title = col("title", "TITLE")
+    c_company = col("company", "COMPANY")
+    c_location = col("location", "LOCATION")
+    c_city = col("city", "CITY")
+    c_state = col("state", "STATE")
+    c_url = col("job_url", "JOB_URL", "job_url_direct", "JOB_URL_DIRECT")
+    c_desc = col("description", "DESCRIPTION")
+    c_date = col("date_posted", "DATE_POSTED")
+
+    jobs: List[Dict] = []
+    for _, row in df.iterrows():
+        # Location: prefer single `location`; else "City, State"
+        if c_location:
+            location = _safe_str(row.get(c_location)).strip()
+        else:
+            city = _safe_str(row.get(c_city)).strip() if c_city else ""
+            state = _safe_str(row.get(c_state)).strip() if c_state else ""
+            location = ", ".join(
+                [p for p in [city, state] if p]) or "Not specified"
+
+        title = _safe_str(row.get(c_title)).strip() if c_title else ""
+        company = _safe_str(row.get(c_company)).strip(
+        ) if c_company else "Unknown Company"
+        description = _safe_str(row.get(c_desc)).strip() if c_desc else ""
+        if not description:
+            description = f"Job posting for {title} at {company}".strip()
+
+        jobs.append(
+            {
+                "title": title or "Unknown Title",
+                "company": company,
+                "location": location,
+                "description": description,
+                "source": _safe_str(row.get(c_site)).strip().title() if c_site else "JobSpy",
+                "url": _safe_str(row.get(c_url)).strip() if c_url else "",
+                "posted_date": _normalize_posted_date(row.get(c_date) if c_date else None),
+            }
+        )
+
+    return jobs
+
+
+def scrape_jobs_from_multiple_sources(
+    search_query: str,
+    sources: List[str] = ["linkedin", "indeed", "glassdoor"],
+    max_results_per_source: int = 50,
+    location: str = "United States",
+    # ~last 30 days; JobSpy supports hours_old in scrape_jobs :contentReference[oaicite:5]{index=5}
+    hours_old: int = 24 * 30,
+    country_indeed: str = "USA",
+    linkedin_fetch_description: bool = True,
+) -> List[Dict]:
+    """
+    Scrapes job postings using python-jobspy and returns the same List[Dict] schema
+    used by the rest of this file.
+
+    Notes:
+    - JobSpy aggregates multiple sites into one dataframe. :contentReference[oaicite:6]{index=6}
+    - Output includes common fields like title/company/location/site/description/date_posted/job_url. :contentReference[oaicite:7]{index=7}
+    """
+    # Map requested sources to jobspy site_name values
+    site_name: List[str] = []
+    for s in (sources or []):
+        key = s.strip().lower()
+        if key in _SOURCE_TO_JOBSPY_SITE:
+            site_name.append(_SOURCE_TO_JOBSPY_SITE[key])
+
+    # Default to the same trio if list becomes empty
+    if not site_name:
+        site_name = ["linkedin", "indeed", "glassdoor"]
+
+    # JobSpy returns a DataFrame
+    # results_wanted is total results across sites (not per-site), so request len(site_name)*max_results_per_source :contentReference[oaicite:8]{index=8}
+    df = scrape_jobs(
+        site_name=site_name,
+        search_term=search_query,
+        location=location,
+        results_wanted=max_results_per_source * len(site_name),
+        hours_old=hours_old,
+        country_indeed=country_indeed,
+        linkedin_fetch_description=linkedin_fetch_description,
+    )
+
+    return _jobspy_df_to_jobs(df)''', language='python')
     search_query = st.text_input(
         "Search Query", value="AI Engineer")
     # num_postings = st.number_input(
@@ -189,7 +325,7 @@ if st.session_state.current_page == 'Introduction & Data Generation':
         df_display = pd.DataFrame(st.session_state.raw_job_postings)
         st.dataframe(df_display, use_container_width=True)
 
-        st.info("**Note:** You might notice that some jobs are hidden behind asterisks. This is because many modern websites have implemented strategies to prevent bots and scraping. Your challenge would be to try various methods to work around these and get the proper data, or clean it in the next steps to remove the data. Alternatively, you can use the simulated data for processing.")
+        st.info("**Note:** Sometimes, you might get soft-blocks while scraping from LinkedIn. If you notice fewer results than expected, consider using the simulated data option to proceed with the lab exercises.")
 
     if st.session_state.raw_job_postings:
         st.markdown(f"The scraped data provides real-world job postings for analysis. This is the raw material that your HR team needs you to process into actionable insights.")
@@ -203,10 +339,11 @@ elif st.session_state.current_page == 'Defining AI Taxonomy & Scoring Logic':
     st.subheader("2.1 Define AI Skill Taxonomy")
     st.markdown(f"The AI skill taxonomy is a comprehensive dictionary mapping categories of AI to specific keywords. This structure helps in systematically identifying diverse AI competencies within job descriptions. You'll define the `SkillCategory` Enum and the `AI_SKILLS` dictionary as specified.")
 
-    st.markdown(f"**`SkillCategory` Enum:**")
-    st.code("class SkillCategory(str, Enum):\n    ML_ENGINEERING = \"ml_engineering\"\n    DATA_SCIENCE = \"data_science\"\n    AI_INFRASTRUCTURE = \"ai_infrastructure\"\n    AI_PRODUCT = \"ai_product\"\n    AI_STRATEGY = \"ai_strategy\"")
-    st.markdown(f"**`AI_SKILLS` Dictionary:**")
-    st.code('''AI_SKILLS: Dict[SkillCategory, Set[str]] = {
+    with st.expander(f"**`SkillCategory` Enum**"):
+        st.code("class SkillCategory(str, Enum):\n    ML_ENGINEERING = \"ml_engineering\"\n    DATA_SCIENCE = \"data_science\"\n    AI_INFRASTRUCTURE = \"ai_infrastructure\"\n    AI_PRODUCT = \"ai_product\"\n    AI_STRATEGY = \"ai_strategy\"")
+
+    with st.expander(f"**`AI_SKILLS` Dictionary**"):
+        st.code('''AI_SKILLS: Dict[SkillCategory, Set[str]] = {
     SkillCategory.ML_ENGINEERING: {
         "pytorch", "tensorflow", "keras", "mlops", "ml engineering",
         "model deployment", "feature engineering", "model training",
@@ -236,14 +373,16 @@ elif st.session_state.current_page == 'Defining AI Taxonomy & Scoring Logic':
         "innovation management (ai)"
     }
 }''', language='python')
+
     st.markdown(f"The `AI_SKILLS` dictionary, with its structured categories, provides a clear framework for extracting specific AI competencies from job descriptions. This allows for a granular understanding of the demand for different types of AI expertise.")
 
     st.subheader("2.2 Define Seniority Levels and Classification Logic")
+    stmd.st_mermaid(get_highlighted_pipeline_diagram(2), width='stretch')
     st.markdown(f"To help HR understand the experience level of AI professionals being sought, you need to define job seniority levels and a function to classify them based on job titles. This function will be crucial for segmenting the talent market by experience. Remember to handle case-insensitivity for robustness.")
-    st.markdown(f"**`SeniorityLevel` Enum:**")
-    st.code("class SeniorityLevel(str, Enum):\n    ENTRY = \"entry\"\n    MID = \"mid\"\n    SENIOR = \"senior\"\n    LEAD = \"lead\"\n    DIRECTOR = \"director\"\n    VP = \"vp\"\n    EXECUTIVE = \"executive\"")
-    st.markdown(f"**`SENIORITY_INDICATORS` Dictionary:**")
-    st.code('''SENIORITY_INDICATORS: Dict[SeniorityLevel, List[str]] = {
+    with st.expander(f"**`SeniorityLevel` Enum**"):
+        st.code("class SeniorityLevel(str, Enum):\n    ENTRY = \"entry\"\n    MID = \"mid\"\n    SENIOR = \"senior\"\n    LEAD = \"lead\"\n    DIRECTOR = \"director\"\n    VP = \"vp\"\n    EXECUTIVE = \"executive\"")
+    with st.expander(f"**`SENIORITY_INDICATORS` Dictionary**"):
+        st.code('''SENIORITY_INDICATORS: Dict[SeniorityLevel, List[str]] = {
     SeniorityLevel.ENTRY: ["junior", "entry", "associate", "intern", "graduate", "new grad"],
     SeniorityLevel.MID: ["mid", "intermediate", "ii", "2", "staff"],
     SeniorityLevel.SENIOR: ["senior", "sr", "iii", "3", "experienced"],
@@ -255,9 +394,11 @@ elif st.session_state.current_page == 'Defining AI Taxonomy & Scoring Logic':
     st.markdown(f"The `classify_seniority` function, by providing a standardized seniority level, allows the HR team to analyze demand across different experience brackets. This is vital for understanding talent supply and demand imbalances, and for tailoring recruitment efforts to specific experience profiles.")
 
     st.subheader("2.3 Implement AI Skill Extraction")
+    stmd.st_mermaid(get_highlighted_pipeline_diagram(3), width='stretch')
     st.markdown(f"Based on the `AI_SKILLS` taxonomy, you need a function to extract all relevant AI skills from a job description. This function will be applied to every job posting to build a comprehensive view of desired skills. Robustness here means ensuring case-insensitive matching.")
-    st.code(
-        '''
+    with st.expander(f"**AI Skill Extraction Function**"):
+        st.code(
+            '''
 def extract_ai_skills(text: str) -> Set[str]:
     """
     Extracts AI skills from a job description text, performing case-insensitive matching.
@@ -282,24 +423,27 @@ def extract_ai_skills(text: str) -> Set[str]:
     st.markdown("---")
     st.header("3. Calculating the AI Relevance Score")
     st.markdown(f"To quantify how \"AI-focused\" each job role is, the HR team requires an **AI Relevance Score**. This score will help prioritize jobs, filter for highly specialized AI roles, and understand the depth of AI integration in various positions. Your task is to implement this scoring mechanism using the specified formula.")
-
+    stmd.st_mermaid(get_highlighted_pipeline_diagram(4), width='stretch')
     st.subheader("3.1 Implement AI Relevance Scoring Function")
     st.markdown(f"The AI relevance score combines the number of extracted AI skills with the explicit mention of AI-specific keywords in the job title. This provides a balanced view, considering both the depth of skill requirements and the role's explicit AI focus. The formula is designed to give more weight to the presence of skills while boosting for explicit AI terms in the title.")
 
     st.markdown(
         f"The formula for the AI Relevance Score (ranging from 0 to 1) is:")
     st.markdown(
-        r"$$ \text{min}(\frac{\text{len(skills)}}{5}, 1.0) \times 0.6 + (0.4 \text{ if AI keywords present in title else } 0.0) $$")
+        r"""$$
+\text{min}(\frac{\text{len(skills)}}{5}, 1.0) \times 0.6 + (0.4 \text{ if AI keywords present in title else } 0.0) 
+$$""")
     st.markdown(
-        r"$$ \text{where } \text{len(skills)} \text{ is the number of unique AI skills extracted from the job description.} $$")
+        r"""$$\text{where } \text{len(skills)} \text{ is the number of unique AI skills extracted from the job description.} $$""")
     st.markdown(
-        r"$$ \text{The division by } 5 \text{ normalizes the skill count to a maximum of } 1.0 \text{ if } 5 \text{ or more unique skills are found.} $$")
+        r"""$$\text{The division by } 5 \text{ normalizes the skill count to a maximum of } 1.0 \text{ if } 5 \text{ or more unique skills are found.} $$""")
     st.markdown(
-        r"$$ \text{The } 0.6 \text{ and } 0.4 \text{ weights represent the contribution of skills and title keywords, respectively.} $$")
+        r"""$$\text{The } 0.6 \text{ and } 0.4 \text{ weights represent the contribution of skills and title keywords, respectively.} $$""")
     st.markdown(
         f"AI keywords in title are ```['ai', 'ml', 'machine learning', 'data scientist', 'mlops', 'artificial intelligence']```.")
 
-    st.code('''def calculate_ai_relevance_score(skills: Set[str], title: str) -> float:
+    with st.expander(f"**AI Relevance Score Function**"):
+        st.code('''def calculate_ai_relevance_score(skills: Set[str], title: str) -> float:
     """
     Calculates a 0-1 AI relevance score for a job posting.
     
@@ -407,6 +551,7 @@ elif st.session_state.current_page == 'Temporal Aggregation & Visualizations':
         st.warning(
             "Please process and deduplicate job postings on the 'Data Processing & Deduplication' page first.")
     else:
+        stmd.st_mermaid(get_highlighted_pipeline_diagram(5), width='stretch')
         st.subheader("5.1 Aggregate Job Postings by Week")
         st.markdown(f"To understand trends, we need to group job postings by the week they were posted. This involves calculating the start of the week for each `posted_date` and then counting the number of jobs for each week.")
 
@@ -437,6 +582,8 @@ elif st.session_state.current_page == 'Temporal Aggregation & Visualizations':
 
             st.markdown("---")
             st.header("6. Visualizing AI Talent Market Insights")
+            stmd.st_mermaid(
+                get_highlighted_pipeline_diagram(6), width='stretch')
             st.markdown(f"The final step in your workflow is to present these complex insights in a clear, actionable format for the HR and strategy teams. Visualizations make it easy to grasp trends and make data-driven decisions. You will generate charts for weekly job posting trends, top 10 overall requested skills, and the distribution of demand across seniority levels.")
 
             if st.button("Generate Visualizations", key="generate_viz_btn"):
