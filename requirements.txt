@@ -14,3 +14,4 @@ beautifulsoup4
 httpx
 nest-asyncio
 faker
+python-jobspy

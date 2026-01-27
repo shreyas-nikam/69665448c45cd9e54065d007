@@ -1,3 +1,4 @@
+# --- UPDATED imports (remove playwright/httpx/bs4/asyncio/time related scraping deps) ---
 import pandas as pd
 import numpy as np
 from faker import Faker
@@ -9,192 +10,113 @@ import seaborn as sns
 import hashlib
 from typing import List, Set, Dict, Tuple
 from enum import Enum
-import asyncio
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-from bs4 import BeautifulSoup
-import httpx
-import time
+
+# NEW: python-jobspy
+# pip install -U python-jobspy :contentReference[oaicite:0]{index=0}
+from jobspy import scrape_jobs
 
 # Configure plot styles for better readability
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette('viridis')
 
 # ============================================================================
-# Web Scraping Functions
+# Web Scraping Functions (REPLACED with python-jobspy)
 # ============================================================================
 
+# JobSpy expects site_name values like: linkedin, indeed, glassdoor, google, zip_recruiter :contentReference[oaicite:1]{index=1}
+_SOURCE_TO_JOBSPY_SITE = {
+    "linkedin": "linkedin",
+    "indeed": "indeed",
+    "glassdoor": "glassdoor",
+    "google": "google",
+    "ziprecruiter": "zip_recruiter",
+    "zip_recruiter": "zip_recruiter",
+    "bayt": "bayt",
+    "naukri": "naukri",
+    "bdjobs": "bdjobs",
+}
 
-async def scrape_linkedin_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
+
+def _safe_str(x) -> str:
+    return "" if x is None else str(x)
+
+
+def _normalize_posted_date(val) -> str:
     """
-    Scrapes job postings from LinkedIn using Playwright.
-
-    Args:
-        search_query (str): The job search query (e.g., "Machine Learning Engineer")
-        max_results (int): Maximum number of job postings to scrape
-
-    Returns:
-        List[Dict]: List of job posting dictionaries
+    JobSpy commonly returns a `date_posted` column (string or datetime-like). :contentReference[oaicite:2]{index=2}
+    Normalize to 'YYYY-MM-DD'. If missing/unparseable, default to today.
     """
-    jobs = []
-    print("Scraping Linkedin")
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return datetime.now().strftime("%Y-%m-%d")
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-
-            # Navigate to LinkedIn jobs search
-            search_url = f"https://www.linkedin.com/jobs/search/?keywords={search_query.replace(' ', '%20')}"
-            await page.goto(search_url, timeout=30000)
-            await page.wait_for_timeout(3000)  # Wait for content to load
-
-            # Get page content
-            content = await page.content()
-            print(content)
-            soup = BeautifulSoup(content, 'html.parser')
-
-            # Parse job listings
-            job_cards = soup.find_all(
-                'div', class_='base-card', limit=max_results)
-
-            for card in job_cards:
-                try:
-                    title_elem = card.find(
-                        'h3', class_='base-search-card__title')
-                    company_elem = card.find(
-                        'h4', class_='base-search-card__subtitle')
-                    location_elem = card.find(
-                        'span', class_='job-search-card__location')
-                    link_elem = card.find('a', class_='base-card__full-link')
-
-                    if title_elem and company_elem:
-                        jobs.append({
-                            'title': title_elem.text.strip(),
-                            'company': company_elem.text.strip(),
-                            'location': location_elem.text.strip() if location_elem else 'Not specified',
-                            'description': f"Job posting for {title_elem.text.strip()} at {company_elem.text.strip()}",
-                            'source': 'LinkedIn',
-                            'url': link_elem.get('href', '') if link_elem else '',
-                            'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
-                        })
-                except Exception as e:
-                    print(f"Error parsing job card: {e}")
-                    continue
-
-            await browser.close()
-    except Exception as e:
-        print(f"Error scraping LinkedIn: {e}")
-
-    return jobs
+        dt = pd.to_datetime(val, errors="coerce")
+        if pd.isna(dt):
+            return datetime.now().strftime("%Y-%m-%d")
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
 
 
-async def scrape_indeed_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
+def _jobspy_df_to_jobs(df: pd.DataFrame) -> List[Dict]:
     """
-    Scrapes job postings from Indeed using httpx and BeautifulSoup.
+    Converts JobSpy dataframe to the schema used throughout this file:
+      title, company, location, description, source, url, posted_date
 
-    Args:
-        search_query (str): The job search query
-        max_results (int): Maximum number of job postings to scrape
-
-    Returns:
-        List[Dict]: List of job posting dictionaries
+    JobSpy output is commonly lowercase (e.g., site/title/company/location/job_url/description/date_posted). :contentReference[oaicite:3]{index=3}
+    Some examples/docs show uppercase columns (SITE/TITLE/COMPANY/CITY/STATE/JOB_URL/DESCRIPTION). :contentReference[oaicite:4]{index=4}
+    This adapter supports both.
     """
-    jobs = []
-    print("Scraping Indeed")
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            # Indeed search URL
-            search_url = f"https://www.indeed.com/jobs?q={search_query.replace(' ', '+')}"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    if df is None or df.empty:
+        return []
+
+    # Build a case-insensitive column map
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*names: str):
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+
+    c_site = col("site", "SITE")
+    c_title = col("title", "TITLE")
+    c_company = col("company", "COMPANY")
+    c_location = col("location", "LOCATION")
+    c_city = col("city", "CITY")
+    c_state = col("state", "STATE")
+    c_url = col("job_url", "JOB_URL", "job_url_direct", "JOB_URL_DIRECT")
+    c_desc = col("description", "DESCRIPTION")
+    c_date = col("date_posted", "DATE_POSTED")
+
+    jobs: List[Dict] = []
+    for _, row in df.iterrows():
+        # Location: prefer single `location`; else "City, State"
+        if c_location:
+            location = _safe_str(row.get(c_location)).strip()
+        else:
+            city = _safe_str(row.get(c_city)).strip() if c_city else ""
+            state = _safe_str(row.get(c_state)).strip() if c_state else ""
+            location = ", ".join(
+                [p for p in [city, state] if p]) or "Not specified"
+
+        title = _safe_str(row.get(c_title)).strip() if c_title else ""
+        company = _safe_str(row.get(c_company)).strip(
+        ) if c_company else "Unknown Company"
+        description = _safe_str(row.get(c_desc)).strip() if c_desc else ""
+        if not description:
+            description = f"Job posting for {title} at {company}".strip()
+
+        jobs.append(
+            {
+                "title": title or "Unknown Title",
+                "company": company,
+                "location": location,
+                "description": description,
+                "source": _safe_str(row.get(c_site)).strip().title() if c_site else "JobSpy",
+                "url": _safe_str(row.get(c_url)).strip() if c_url else "",
+                "posted_date": _normalize_posted_date(row.get(c_date) if c_date else None),
             }
-
-            response = await client.get(search_url, headers=headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Parse job cards
-            job_cards = soup.find_all(
-                'div', class_='job_seen_beacon', limit=max_results)
-
-            for card in job_cards:
-                try:
-                    title_elem = card.find('h2', class_='jobTitle')
-                    company_elem = card.find('span', class_='companyName')
-                    location_elem = card.find('div', class_='companyLocation')
-
-                    if title_elem and company_elem:
-                        # Get job title text
-                        title_text = title_elem.get_text(strip=True)
-
-                        jobs.append({
-                            'title': title_text,
-                            'company': company_elem.text.strip(),
-                            'location': location_elem.text.strip() if location_elem else 'Not specified',
-                            'description': f"Job opportunity for {title_text} position",
-                            'source': 'Indeed',
-                            'url': f"https://www.indeed.com/viewjob?jk={card.get('data-jk', '')}",
-                            'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
-                        })
-                except Exception as e:
-                    print(f"Error parsing job card: {e}")
-                    continue
-
-    except Exception as e:
-        print(f"Error scraping Indeed: {e}")
-
-    return jobs
-
-
-async def scrape_glassdoor_jobs(search_query: str, max_results: int = 50) -> List[Dict]:
-    """
-    Scrapes job postings from Glassdoor using httpx and BeautifulSoup.
-
-    Args:
-        search_query (str): The job search query
-        max_results (int): Maximum number of job postings to scrape
-
-    Returns:
-        List[Dict]: List of job posting dictionaries
-    """
-    jobs = []
-    print("Scraping Glassdoor")
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            # Glassdoor search URL
-            search_url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={search_query.replace(' ', '%20')}"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-
-            response = await client.get(search_url, headers=headers)
-            print(response)
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Parse job listings
-            job_cards = soup.find_all(
-                'li', class_='react-job-listing', limit=max_results)
-
-            for card in job_cards:
-                try:
-                    title_elem = card.find('a', class_='job-title')
-                    company_elem = card.find('div', class_='employer-name')
-                    location_elem = card.find('div', class_='location')
-
-                    if title_elem:
-                        jobs.append({
-                            'title': title_elem.text.strip(),
-                            'company': company_elem.text.strip() if company_elem else 'Unknown Company',
-                            'location': location_elem.text.strip() if location_elem else 'Not specified',
-                            'description': f"Position available: {title_elem.text.strip()}",
-                            'source': 'Glassdoor',
-                            'url': f"https://www.glassdoor.com{title_elem.get('href', '')}",
-                            'posted_date': (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d')
-                        })
-                except Exception as e:
-                    print(f"Error parsing job card: {e}")
-                    continue
-
-    except Exception as e:
-        print(f"Error scraping Glassdoor: {e}")
+        )
 
     return jobs
 
@@ -202,67 +124,50 @@ async def scrape_glassdoor_jobs(search_query: str, max_results: int = 50) -> Lis
 def scrape_jobs_from_multiple_sources(
     search_query: str,
     sources: List[str] = ["linkedin", "indeed", "glassdoor"],
-    max_results_per_source: int = 50
+    max_results_per_source: int = 50,
+    location: str = "United States",
+    # ~last 30 days; JobSpy supports hours_old in scrape_jobs :contentReference[oaicite:5]{index=5}
+    hours_old: int = 24 * 30,
+    country_indeed: str = "USA",
+    linkedin_fetch_description: bool = True,
 ) -> List[Dict]:
     """
-    Scrapes job postings from multiple sources.
+    Scrapes job postings using python-jobspy and returns the same List[Dict] schema
+    used by the rest of this file.
 
-    Args:
-        search_query (str): The job search query
-        sources (List[str]): List of sources to scrape from
-        max_results_per_source (int): Maximum results per source
-
-    Returns:
-        List[Dict]: Combined list of job postings from all sources
+    Notes:
+    - JobSpy aggregates multiple sites into one dataframe. :contentReference[oaicite:6]{index=6}
+    - Output includes common fields like title/company/location/site/description/date_posted/job_url. :contentReference[oaicite:7]{index=7}
     """
-    all_jobs = []
+    # Map requested sources to jobspy site_name values
+    site_name: List[str] = []
+    for s in (sources or []):
+        key = s.strip().lower()
+        if key in _SOURCE_TO_JOBSPY_SITE:
+            site_name.append(_SOURCE_TO_JOBSPY_SITE[key])
 
-    async def scrape_all():
-        tasks = []
+    # Default to the same trio if list becomes empty
+    if not site_name:
+        site_name = ["linkedin", "indeed", "glassdoor"]
 
-        if "linkedin" in sources:
-            tasks.append(scrape_linkedin_jobs(
-                search_query, max_results_per_source))
-        if "indeed" in sources:
-            tasks.append(scrape_indeed_jobs(
-                search_query, max_results_per_source))
-        if "glassdoor" in sources:
-            tasks.append(scrape_glassdoor_jobs(
-                search_query, max_results_per_source))
+    # JobSpy returns a DataFrame
+    # results_wanted is total results across sites (not per-site), so request len(site_name)*max_results_per_source :contentReference[oaicite:8]{index=8}
+    df = scrape_jobs(
+        site_name=site_name,
+        search_term=search_query,
+        location=location,
+        results_wanted=max_results_per_source * len(site_name),
+        hours_old=hours_old,
+        country_indeed=country_indeed,
+        linkedin_fetch_description=linkedin_fetch_description,
+    )
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, list):
-                all_jobs.extend(result)
-            elif isinstance(result, Exception):
-                print(f"Scraping error: {result}")
-
-        return all_jobs
-
-    # Run the async scraping
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If there's already a running loop, create a new one
-            import nest_asyncio
-            nest_asyncio.apply()
-            return asyncio.run(scrape_all())
-        else:
-            return asyncio.run(scrape_all())
-    except RuntimeError:
-        # Fallback for environments where asyncio.run() doesn't work
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(scrape_all())
-        finally:
-            loop.close()
-
+    return _jobspy_df_to_jobs(df)
 
 # ============================================================================
 # Original Synthetic Data Generation Function (kept as fallback)
 # ============================================================================
+
 
 def generate_synthetic_job_postings(num_postings: int = 1500) -> List[Dict]:
     """

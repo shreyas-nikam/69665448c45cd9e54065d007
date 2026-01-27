@@ -65,7 +65,8 @@ st.sidebar.markdown("""
 st.sidebar.divider()
 st.sidebar.subheader("🛠️ Tools Introduced")
 st.sidebar.markdown("""
-- **Playwright**: Browser automation for LinkedIn scraping
+- **python-jobspy**: For job data scraping
+- **Playwright (Optional)**: Browser automation for web scraping
 - **BeautifulSoup**: HTML parsing
 - **Pandas**: Data manipulation and analysis
 """)
